@@ -15,6 +15,17 @@ router = APIRouter(prefix="/api", tags=["stt"])
 logger = get_logger(__name__)
 
 
+def _resolve_stt_service(request: Request) -> object:
+    provider_override = request.headers.get("X-Speech-Provider")
+    manager = getattr(request.app.state, "speech_manager", None)
+    if manager is not None:
+        try:
+            return manager.get_stt(provider_override)
+        except Exception:
+            pass
+    return getattr(request.app.state, "stt_service", None)
+
+
 @router.post("/stt", response_model=STTResponse)
 @limiter.limit("20/minute")
 async def speech_to_text(
@@ -25,7 +36,7 @@ async def speech_to_text(
     db: AsyncSession = Depends(get_db),
 ) -> STTResponse:
     """Transcribe audio using the language of a user-owned study plan."""
-    stt_service = getattr(request.app.state, "stt_service", None)
+    stt_service = _resolve_stt_service(request)
     if stt_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

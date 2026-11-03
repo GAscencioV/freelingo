@@ -1,3 +1,4 @@
+import base64
 import io
 
 import httpx
@@ -54,9 +55,15 @@ class WhisperSTTService:
 
 
 class OpenAISTTService:
-    def __init__(self, api_key: str, model: str) -> None:
-        self._client = openai.AsyncOpenAI(api_key=api_key)
+    def __init__(
+        self, api_key: str, model: str, base_url: str | None = None
+    ) -> None:
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = openai.AsyncOpenAI(**client_kwargs)
         self.model = model
+        self.base_url = base_url
 
     async def health(self) -> None:
         """Raise if OpenAI STT is unreachable (lightweight models list call)."""
@@ -81,6 +88,91 @@ class OpenAISTTService:
         text = response.text.strip()
         logger.info(
             "[stt-openai] Transcribed model=%s lang=%s: %r",
+            self.model,
+            language,
+            text,
+        )
+        return text
+
+
+class GeminiSTTService:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-3.5-transcribe",
+        base_url: str = "https://generativelanguage.googleapis.com",
+        timeout: float = 60.0,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    async def health(self) -> None:
+        """Raise if Gemini STT endpoint is unreachable."""
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.base_url}/v1beta/models/{self.model}",
+                headers={"x-goog-api-key": self.api_key},
+                timeout=5.0,
+            )
+            r.raise_for_status()
+
+    async def transcribe(
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.wav",
+        mime_type: str = "audio/wav",
+        *,
+        language: str,
+    ) -> str:
+        """Transcribe audio using Google Gemini multimodal speech recognition."""
+        _ = filename
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        prompt = (
+            f"Transcribe this speech recording accurately in language '{language}'. "
+            "Output only the transcribed text verbatim with standard punctuation and capitalization. "
+            "Do not add explanations, notes, or labels."
+        )
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": audio_b64,
+                            }
+                        },
+                    ],
+                }
+            ]
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/v1beta/models/{self.model}:generateContent",
+                headers={
+                    "x-goog-api-key": self.api_key,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        try:
+            candidates = data.get("candidates", [])
+            text = candidates[0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini STT response payload: {data}") from exc
+
+        logger.info(
+            "[stt-gemini] Transcribed model=%s lang=%s: %r",
             self.model,
             language,
             text,

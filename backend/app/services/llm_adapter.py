@@ -30,6 +30,7 @@ MAX_CONTEXT_TOKENS = {
     "anthropic": 200000,
     "deepseek": 128000,
     "ollama": 8192,
+    "gemini": 1000000,
 }
 
 
@@ -628,7 +629,10 @@ class LLMAdapter:
             )
             self.model = settings.OLLAMA_MODEL
         elif self.provider == "openai":
-            self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            client_kwargs = {"api_key": settings.OPENAI_API_KEY}
+            if settings.OPENAI_BASE_URL:
+                client_kwargs["base_url"] = settings.OPENAI_BASE_URL
+            self.client = AsyncOpenAI(**client_kwargs)
             self.model = settings.OPENAI_MODEL
         elif self.provider == "deepseek":
             self.client = AsyncOpenAI(
@@ -636,6 +640,13 @@ class LLMAdapter:
                 api_key=settings.DEEPSEEK_API_KEY,
             )
             self.model = settings.DEEPSEEK_MODEL
+        elif self.provider == "gemini":
+            base_url = f"{settings.GEMINI_BASE_URL.rstrip('/')}/v1beta/openai"
+            self.client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=settings.GEMINI_API_KEY,
+            )
+            self.model = settings.GEMINI_MODEL
         elif self.provider == "anthropic":
             self._anthropic = _anthropic.AsyncAnthropic(
                 api_key=settings.ANTHROPIC_API_KEY,
@@ -779,7 +790,7 @@ class LLMAdapter:
                 sdk_max_retries=sdk_max_retries,
             )
 
-        # For Ollama and DeepSeek (OpenAI-compatible Chat Completions):
+        # For Ollama, DeepSeek, and Gemini (OpenAI-compatible Chat Completions):
         # pass stream_options so the final chunk includes token usage.
         # Defensively build kwargs to stay compatible with older SDK versions.
         extra: dict = {}
@@ -979,7 +990,6 @@ class LLMAdapter:
                     "name": call.name,
                     "input": call.arguments,
                 }
-                for call in calls
             )
             tool_results = [
                 {

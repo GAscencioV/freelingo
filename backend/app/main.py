@@ -54,8 +54,9 @@ from app.routers import (
 )
 from app.routers import config as config_router
 from app.routers import health as health_router
-from app.services.stt_service import OpenAISTTService, WhisperSTTService
-from app.services.tts_service import KokoroTTSService, OpenAITTSService
+from app.services.speech_manager import SpeechServiceManager
+from app.services.stt_service import GeminiSTTService, OpenAISTTService, WhisperSTTService
+from app.services.tts_service import GeminiTTSService, KokoroTTSService, OpenAITTSService
 
 
 def _run_migrations() -> None:
@@ -82,27 +83,63 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
     # Ensure the TTS preview cache directory exists on startup
     os.makedirs(_TTS_PREVIEWS_DIR, exist_ok=True)
 
-    if settings.TTS_PROVIDER == "openai":
-        if not settings.OPENAI_API_KEY:
-            raise ValueError("TTS_PROVIDER=openai requires OPENAI_API_KEY to be set")
-        app.state.tts_service = OpenAITTSService(
+    speech_manager = SpeechServiceManager()
+
+    # Register local providers (Kokoro & Whisper)
+    kokoro_tts = KokoroTTSService(settings.TTS_BASE_URL, settings.TTS_VOICE)
+    speech_manager.register_tts("local", kokoro_tts)
+
+    whisper_stt = WhisperSTTService(settings.STT_BASE_URL)
+    speech_manager.register_stt("local", whisper_stt)
+
+    # Register OpenAI providers
+    if settings.OPENAI_API_KEY:
+        openai_tts_base_url = settings.OPENAI_TTS_BASE_URL or settings.OPENAI_BASE_URL or None
+        openai_tts = OpenAITTSService(
             api_key=settings.OPENAI_API_KEY,
             model=settings.OPENAI_TTS_MODEL,
             voice=settings.OPENAI_TTS_VOICE,
             speed=settings.OPENAI_TTS_SPEED,
+            base_url=openai_tts_base_url,
         )
-    else:
-        app.state.tts_service = KokoroTTSService(settings.TTS_BASE_URL, settings.TTS_VOICE)
+        speech_manager.register_tts("openai", openai_tts)
 
-    if settings.STT_PROVIDER == "openai":
-        if not settings.OPENAI_API_KEY:
-            raise ValueError("STT_PROVIDER=openai requires OPENAI_API_KEY to be set")
-        app.state.stt_service = OpenAISTTService(
+        openai_stt_base_url = settings.OPENAI_STT_BASE_URL or settings.OPENAI_BASE_URL or None
+        openai_stt = OpenAISTTService(
             api_key=settings.OPENAI_API_KEY,
             model=settings.OPENAI_STT_MODEL,
+            base_url=openai_stt_base_url,
         )
-    else:
-        app.state.stt_service = WhisperSTTService(settings.STT_BASE_URL)
+        speech_manager.register_stt("openai", openai_stt)
+    elif settings.TTS_PROVIDER == "openai":
+        raise ValueError("TTS_PROVIDER=openai requires OPENAI_API_KEY to be set")
+    elif settings.STT_PROVIDER == "openai":
+        raise ValueError("STT_PROVIDER=openai requires OPENAI_API_KEY to be set")
+
+    # Register Gemini providers
+    if settings.GEMINI_API_KEY:
+        gemini_tts = GeminiTTSService(
+            api_key=settings.GEMINI_API_KEY,
+            model=settings.GEMINI_TTS_MODEL,
+            voice=settings.GEMINI_TTS_VOICE,
+            base_url=settings.GEMINI_BASE_URL,
+        )
+        speech_manager.register_tts("gemini", gemini_tts)
+
+        gemini_stt = GeminiSTTService(
+            api_key=settings.GEMINI_API_KEY,
+            model=settings.GEMINI_STT_MODEL,
+            base_url=settings.GEMINI_BASE_URL,
+        )
+        speech_manager.register_stt("gemini", gemini_stt)
+    elif settings.TTS_PROVIDER == "gemini":
+        raise ValueError("TTS_PROVIDER=gemini requires GEMINI_API_KEY to be set")
+    elif settings.STT_PROVIDER == "gemini":
+        raise ValueError("STT_PROVIDER=gemini requires GEMINI_API_KEY to be set")
+
+    app.state.speech_manager = speech_manager
+    app.state.tts_service = speech_manager.get_tts()
+    app.state.stt_service = speech_manager.get_stt()
 
     yield
 

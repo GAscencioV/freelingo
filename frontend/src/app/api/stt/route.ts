@@ -14,6 +14,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const headers = new Headers()
 
+  const incomingSpeechProvider = request.headers.get('X-Speech-Provider')
+  if (incomingSpeechProvider) headers.set('X-Speech-Provider', incomingSpeechProvider)
+
   const auth = request.headers.get('Authorization')
   if (auth) headers.set('Authorization', auth)
 

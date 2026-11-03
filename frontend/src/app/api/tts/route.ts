@@ -1,5 +1,5 @@
 /**
- * TTS proxy — forwards the request to the backend and streams back binary MP3.
+ * TTS proxy — forwards the request to the backend and streams back binary audio.
  *
  * A dedicated Route Handler is needed because the generic next.config.ts rewrite
  * would return the response as text/event-stream, breaking binary audio data.
@@ -18,6 +18,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const incomingTraceId = request.headers.get('X-TTS-Trace-ID')
   if (incomingTraceId) headers.set('X-TTS-Trace-ID', incomingTraceId)
+
+  const incomingSpeechProvider = request.headers.get('X-Speech-Provider')
+  if (incomingSpeechProvider) headers.set('X-Speech-Provider', incomingSpeechProvider)
 
   const auth = request.headers.get('Authorization')
   if (auth) headers.set('Authorization', auth)
@@ -48,11 +51,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     incomingTraceId ||
     `tts-${crypto.randomUUID()}`
   const outHeaders = new Headers()
-  outHeaders.set('Content-Type', 'audio/mpeg')
+  const contentType = backendRes.headers.get('Content-Type') || 'audio/mpeg'
+  outHeaders.set('Content-Type', contentType)
   outHeaders.set('X-TTS-Trace-ID', traceId)
   outHeaders.set('X-TTS-Proxy-Fetch-Ms', fetchMs.toFixed(1))
   outHeaders.set('X-TTS-Proxy-Buffer-Ms', bufferMs.toFixed(1))
   outHeaders.set('X-TTS-Proxy-Total-Ms', totalMs.toFixed(1))
+
+  const backendProvider = backendRes.headers.get('X-TTS-Provider')
+  if (backendProvider) outHeaders.set('X-TTS-Provider', backendProvider)
 
   const backendSynthMs = backendRes.headers.get('X-TTS-Backend-Synth-Ms')
   const backendTotalMs = backendRes.headers.get('X-TTS-Backend-Total-Ms')
