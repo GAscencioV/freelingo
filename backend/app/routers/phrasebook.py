@@ -37,7 +37,6 @@ from app.services.resource_native_help import (
     native_help_lock_key,
     upsert_native_help,
 )
-from app.services.tts_service import OpenAITTSService
 
 router = APIRouter(prefix="/api/phrasebook", tags=["phrasebook"])
 logger = get_logger(__name__)
@@ -247,11 +246,25 @@ async def get_phrase_audio(
     cache_key = hashlib.sha256(
         f"{language}:{category_id}:{phrase_index}:{phrase.text}".encode()
     ).hexdigest()[:16]
-    tts_service = getattr(request.app.state, "tts_service", None)
-    if isinstance(tts_service, OpenAITTSService) and tts_service.get_instructions(language):
+
+    manager = getattr(request.app.state, "speech_manager", None)
+    provider_override = request.headers.get("X-Speech-Provider")
+    if manager is not None:
+        try:
+            tts_service = manager.get_tts(provider_override)
+        except Exception:
+            tts_service = getattr(request.app.state, "tts_service", None)
+    else:
+        tts_service = getattr(request.app.state, "tts_service", None)
+
+    if hasattr(tts_service, "get_cache_key"):
         cache_key = tts_service.get_cache_key(phrase.text, language=language)
+
+    media_type = getattr(tts_service, "media_type", "audio/mpeg")
+    ext = "wav" if media_type == "audio/wav" else "mp3"
+
     audio_dir = os.path.join(settings.AUDIO_STORAGE_PATH, "phrasebook", iso)
-    cache_path = os.path.join(audio_dir, f"{cache_key}.mp3")
+    cache_path = os.path.join(audio_dir, f"{cache_key}.{ext}")
 
     if not os.path.isfile(cache_path):
         if tts_service is None:
@@ -277,6 +290,6 @@ async def get_phrase_audio(
 
     return FileResponse(
         path=cache_path,
-        media_type="audio/mpeg",
+        media_type=media_type,
         headers={"Cache-Control": "no-store"},
     )

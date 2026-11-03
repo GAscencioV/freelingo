@@ -13,11 +13,12 @@ class Settings(BaseSettings):
     ALLOW_REGISTRATION: bool = True
     FIRST_USER_IS_ADMIN: bool = True
     BLOCKED_EMAIL_DOMAINS: list[str] = []
-    LLM_PROVIDER: str = "ollama"
+    LLM_PROVIDER: str = "ollama"  # ollama | openai | anthropic | deepseek | gemini
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
     OLLAMA_MODEL: str = "gemma4:e4b"
     EXERCISE_GENERATION_TIMEOUT_SECONDS: int = Field(default=600, ge=1)
     OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = ""
     OPENAI_MODEL: str = "gpt-6-luna"
     OPENAI_REASONING_EFFORT: Literal[
         "", "none", "minimal", "low", "medium", "high", "xhigh", "max"
@@ -27,14 +28,22 @@ class Settings(BaseSettings):
     ANTHROPIC_MAX_TOKENS: int = 8192
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_MODEL: str = "deepseek-chat"
-    TTS_PROVIDER: str = "local"  # local | openai
+    GEMINI_API_KEY: str = ""
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_TTS_MODEL: str = "gemini-3.8-flash-tts"
+    GEMINI_TTS_VOICE: str = "Kore"
+    GEMINI_STT_MODEL: str = "gemini-3.5-transcribe"
+    TTS_PROVIDER: str = "local"  # local | openai | gemini
     TTS_BASE_URL: str = "http://kokoro:8880"
     TTS_VOICE: str = "af_heart"
+    OPENAI_TTS_BASE_URL: str = ""
     OPENAI_TTS_MODEL: str = "tts-1"
     OPENAI_TTS_VOICE: str = "nova"
     OPENAI_TTS_SPEED: float = 1.0
-    STT_PROVIDER: str = "local"  # local | openai
+    STT_PROVIDER: str = "local"  # local | openai | gemini
     STT_BASE_URL: str = "http://whisper:9000"
+    OPENAI_STT_BASE_URL: str = ""
     OPENAI_STT_MODEL: str = "whisper-1"
     RATE_LIMIT_ENABLED: bool = True
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]

@@ -29,10 +29,29 @@ _PREVIEW_DIR = "/app/tts_previews"
 _OPENAI_VOICES = frozenset(
     {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
 )
+_GEMINI_VOICES = frozenset(
+    {"Kore", "Puck", "Charon", "Fenrir", "Aoede"}
+)
 _PREVIEW_TEXT = (
     f"Hello! I'm {TUTOR_DISPLAY_NAME}, your tutor. This is how I sound — warm, clear, "
     "and ready to help you practise every day. Let's get started!"
 )
+
+
+def _resolve_tts_service(request: Request) -> tuple[object, str]:
+    """Resolve the TTS service and active provider name using dynamic manager or app.state."""
+    provider_override = request.headers.get("X-Speech-Provider")
+    manager = getattr(request.app.state, "speech_manager", None)
+    if manager is not None:
+        try:
+            service = manager.get_tts(provider_override)
+            provider_name = manager.get_active_tts_provider(provider_override)
+            return service, provider_name
+        except Exception:
+            pass
+    service = getattr(request.app.state, "tts_service", None)
+    provider_name = (provider_override or settings.TTS_PROVIDER).strip().lower()
+    return service, provider_name
 
 
 @router.post("/tts/tour/{locale}/{step}")
@@ -47,11 +66,16 @@ async def tour_narration(
     """Speak frontend-localized tour text, reusing persistent audio across users."""
     if locale not in SUPPORTED_UI_LOCALES or step not in {f"step{i}" for i in range(1, 8)}:
         raise HTTPException(status_code=404, detail="Unknown tour narration")
-    if settings.TTS_PROVIDER == "openai" and body.voice and body.voice not in OPENAI_VOICES:
-        raise HTTPException(status_code=400, detail="Invalid voice name")
-    service = getattr(request.app.state, "tts_service", None)
+
+    service, provider_name = _resolve_tts_service(request)
     if service is None:
         raise HTTPException(status_code=503, detail="TTS service is not enabled")
+
+    if provider_name == "openai" and body.voice and body.voice not in OPENAI_VOICES:
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+    if provider_name == "gemini" and body.voice and body.voice not in _GEMINI_VOICES:
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+
     try:
         path = await get_tour_audio(service, locale=locale, text=body.text, voice=body.voice)
     except TimeoutError:
@@ -59,8 +83,9 @@ async def tour_narration(
     except Exception:
         logger.exception("tour_narration_failed", locale=locale, step=step)
         raise HTTPException(status_code=503, detail="Tour narration is unavailable")
-    # The URL doesn't contain the text/model revision; always consult the disk cache.
-    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+    media_type = getattr(service, "media_type", "audio/mpeg")
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/tts")
@@ -75,7 +100,7 @@ async def text_to_speech(
     t0 = time.perf_counter()
     trace_id = request.headers.get("X-TTS-Trace-ID") or f"tts-{uuid.uuid4().hex[:12]}"
 
-    tts_service = getattr(request.app.state, "tts_service", None)
+    tts_service, provider_name = _resolve_tts_service(request)
     if tts_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -113,13 +138,18 @@ async def text_to_speech(
             raise HTTPException(status_code=422, detail="No speakable text")
 
     synth_t0 = time.perf_counter()
-    # For local Kokoro TTS, ignore the client voice param — only OpenAI voices
-    # should be forwarded. Prevents 400 errors when user switches from OpenAI
-    # to local and stale OpenAI voice names (e.g. "nova") remain in localStorage.
-    voice = body.voice if settings.TTS_PROVIDER != "local" else None
+    # For local Kokoro TTS, ignore client voice param
+    voice = body.voice if provider_name != "local" else None
+    if provider_name == "openai" and voice and voice not in _OPENAI_VOICES:
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+    if provider_name == "gemini" and voice and voice not in _GEMINI_VOICES:
+        raise HTTPException(status_code=400, detail="Invalid voice name")
+
     audio = await tts_service.synthesize(text, voice, language=language)
     synth_ms = (time.perf_counter() - synth_t0) * 1000
     total_ms = (time.perf_counter() - t0) * 1000
+
+    media_type = getattr(tts_service, "media_type", "audio/mpeg")
 
     logger.info(
         "tts",
@@ -134,11 +164,12 @@ async def text_to_speech(
 
     return Response(
         content=audio,
-        media_type="audio/mpeg",
+        media_type=media_type,
         headers={
             "X-TTS-Trace-ID": trace_id,
             "X-TTS-Backend-Synth-Ms": f"{synth_ms:.1f}",
             "X-TTS-Backend-Total-Ms": f"{total_ms:.1f}",
+            "X-TTS-Provider": provider_name,
         },
     )
 
@@ -150,41 +181,43 @@ async def voice_preview(
     voice: str,
     current_user: User = Depends(get_current_user),
 ) -> FileResponse:
-    """Return a cached preview audio clip for the given OpenAI TTS voice.
+    """Return a cached preview audio clip for the given TTS voice.
 
-    The MP3 is generated once and persisted to disk so subsequent requests
-    are served from the local cache without incurring further API costs.
-    Only available when TTS_PROVIDER=openai.
+    Available when TTS_PROVIDER is openai or gemini.
     """
-    if settings.TTS_PROVIDER != "openai":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Voice preview is only available with OpenAI TTS",
-        )
-
-    if voice not in _OPENAI_VOICES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid voice name")
-
-    tts_service = getattr(request.app.state, "tts_service", None)
+    tts_service, provider_name = _resolve_tts_service(request)
     if tts_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="TTS service is not enabled",
         )
 
-    cache_path = os.path.join(_PREVIEW_DIR, f"{voice}.mp3")
-    if isinstance(tts_service, OpenAITTSService) and tts_service.get_instructions():
+    if provider_name not in ("openai", "gemini"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Voice preview is only available with OpenAI or Gemini TTS",
+        )
+
+    if provider_name == "openai" and voice not in _OPENAI_VOICES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid voice name")
+    if provider_name == "gemini" and voice not in _GEMINI_VOICES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid voice name")
+
+    media_type = getattr(tts_service, "media_type", "audio/mpeg")
+    ext = "wav" if media_type == "audio/wav" else "mp3"
+
+    cache_path = os.path.join(_PREVIEW_DIR, f"{provider_name}-{voice}.{ext}")
+    if hasattr(tts_service, "get_cache_key"):
         key = tts_service.get_cache_key(_PREVIEW_TEXT, voice)
-        cache_path = os.path.join(_PREVIEW_DIR, f"{voice}-{key}.mp3")
+        cache_path = os.path.join(_PREVIEW_DIR, f"{provider_name}-{voice}-{key}.{ext}")
 
     if not os.path.exists(cache_path):
         os.makedirs(_PREVIEW_DIR, exist_ok=True)
         audio = await tts_service.synthesize(_PREVIEW_TEXT, voice)
-        # Write atomically via a temp file to avoid partial reads
         tmp_path = cache_path + ".tmp"
         with open(tmp_path, "wb") as fh:  # noqa: PTH123
             fh.write(audio)
         os.replace(tmp_path, cache_path)
-        logger.info("tts_preview_cached", voice=voice, bytes=len(audio))
+        logger.info("tts_preview_cached", provider=provider_name, voice=voice, bytes=len(audio))
 
-    return FileResponse(cache_path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+    return FileResponse(cache_path, media_type=media_type, headers={"Cache-Control": "no-store"})

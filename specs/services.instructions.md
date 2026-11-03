@@ -13,10 +13,11 @@ The frontend never calls an external provider directly.
 
 ## LLM adapter
 
-`llm_adapter.py` provides provider-neutral access to Ollama, OpenAI, Anthropic, and DeepSeek.
+`llm_adapter.py` provides provider-neutral access to Ollama, OpenAI, Anthropic, DeepSeek, and Gemini.
 
-OpenAI uses the Responses API for every LLM request; Ollama and DeepSeek use Chat Completions and
-Anthropic uses its native API. The OpenAI model defaults to `gpt-6-luna`. Optional
+OpenAI uses the Responses API for every LLM request; Ollama, DeepSeek, and Gemini use Chat Completions
+and Anthropic uses its native API. Gemini connects to Google's OpenAI-compatible endpoint at
+`{GEMINI_BASE_URL}/v1beta/openai`. The OpenAI model defaults to `gpt-6-luna`. Optional
 `OPENAI_REASONING_EFFORT` is sent as `reasoning.effort` on chat, structured generation, tool
 continuations, and fallbacks. An empty value omits it. Supported values depend on the model; the
 adapter does not infer reasoning settings from model names or force `none` for tools.
@@ -152,6 +153,11 @@ best-effort and must not fail the visible tutor response.
 
 ## Speech
 
+`speech_base.py` defines explicit runtime protocols (`TTSService` and `STTService`) for speech adapters.
+`speech_manager.py` implements `SpeechServiceManager` which registers configured speech adapters and
+resolves providers dynamically with `get_tts()` and `get_stt()`, admitting default settings and
+request-level overrides.
+
 `chat_markdown.py` uses `markdown-it-py` CommonMark tokens to derive spoken content from written-chat
 Markdown. It retains inline wording, literal punctuation and paragraph/list boundaries, omits HTML
 and presentation markers, and adds a sentence boundary to bare list items. Image descriptions retain
@@ -163,17 +169,17 @@ It does not call a provider or persist anything. The HTTP TTS router invokes it 
 `conversation_id`; other TTS callers
 and the voice pipeline continue supplying their existing text.
 
-`tts_service.py` exposes `synthesize(text, voice=None, language=None) -> bytes` through local Kokoro or
-OpenAI. OpenAI supplies shared native-pronunciation instructions for `gpt-4o-mini-tts` and its snapshots,
+`tts_service.py` exposes `synthesize(text, voice=None, language=None) -> bytes` through local Kokoro,
+OpenAI, or Gemini. OpenAI supplies shared native-pronunciation instructions for `gpt-4o-mini-tts` and its snapshots,
 using the supplied language/region when available and requesting language inference otherwise.
-Legacy/unknown OpenAI models and Kokoro ignore `language` and receive no pronunciation instructions.
-Voice selection remains independent of language. OpenAI synthesis cache keys include instructions
-only when supported by the configured model.
+`OpenAITTSService` supports custom base URLs. `GeminiTTSService` uses native REST generateContent with
+audio modalities, returning WAV bytes. Legacy/unknown OpenAI models, Gemini, and Kokoro ignore `language`
+guidance and receive no pronunciation instructions. Voice selection remains independent of language.
 
 `stt_service.py` exposes
-`transcribe(audio_bytes, filename, mime_type, *, language) -> str` through local faster-whisper or
-OpenAI. `language` is required and explicit. Resource STT derives it from an owned plan; voice derives
-it from resolved session language.
+`transcribe(audio_bytes, filename, mime_type, *, language) -> str` through local faster-whisper,
+OpenAI (with custom base URL support), or Gemini (multimodal REST). `language` is required and explicit.
+Resource STT derives it from an owned plan; voice derives it from resolved session language.
 
 Provider details belong to `speech-services.instructions.md`.
 
